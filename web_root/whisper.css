@@ -1,0 +1,70 @@
+.sidebar {
+    float: left;
+    min-height: 50%;
+    background: #ced;
+    margin-right:25px;
+    margin-bottom:25px;
+    padding: 5px;
+}
+.status {
+    color: blue;
+    width:100%;
+}
+.error {
+    color: red;
+    width:100%;
+}
+.topic_button, .like_button {
+    display:block;
+    color:#444;
+    border:1px solid #CCC;
+    background:#BBE;
+    box-shadow: 0 0 5px -1px rgba(0,0,0,0.2);
+    cursor:pointer;
+    vertical-align:middle;
+    margin: 10px;
+    padding: 5px;
+    text-align: center;
+}
+.selected_topic {
+    background: #44D;
+    color: white;
+}
+.topic_button:hover {
+    box-shadow: 0 0 5px -1px rgba(0,0,0,0.6);
+}
+.topic_button:active {
+    color: #44D;
+    border:1px solid #44D;
+    box-shadow: 0 0 5px -1px rgba(0,0,0,0.6);
+}
+.feed_message {
+    display:block;
+    width: fit-content;
+    color:#355;
+    border:1px solid #BDD;
+    background:#ECE;
+    box-shadow: 0 0 5px -1px rgba(0,0,0,0.2);
+    vertical-align:middle;
+    margin: 10px;
+    padding: 5px;
+    text-align: left;
+}
+.feed_message:hover {
+    box-shadow: 0 0 5px -1px rgba(0,0,0,0.6);
+}
+.feed_message b {
+    color: #C00;
+}
+.downvote_botton {
+    color: red;
+    display: inline-block;
+    margin-left: 5px;
+    margin-right: 5px;
+    cursor: pointer; /* Makes it look like a button */
+    font-size: 1.2em; /* Adjust the size */
+}
+.list_of_boxes {
+    display:inline-block;
+    width:70%;
+}

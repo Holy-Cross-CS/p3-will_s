@@ -1,0 +1,41 @@
+<html>
+<head>
+<link rel="stylesheet" type="text/css" href="whisper.css" media="all" />
+<script src="whisper.js"></script>
+</head>
+<body>
+<p>
+<h1>Welcome to whisper :)</h1>
+<p>
+<form action="" onsubmit="return false;">
+    <div class="sidebar">
+        Select a topic to see posts.<br>
+        <div id="topicslist">
+            <div id="topic_statusline" class="status">No topics have been mentioned yet...</div>
+            <div id="topic_errorline" class="error"></div>
+        </div>
+    </div>
+
+    <p>
+    <input id="likebutton" type="button" value="Like" onClick="like_topic()" hidden>
+
+    <p>
+    Make a new post, and be #sure to #mention some topics.
+    <p>
+    <input id="userinput" type="text" size=65
+                          value="Hey #coders isn't #http great?"
+                          placeholder="Type your #clever message here.">
+    <input id="sendbutton" type="button" value="Send" onClick="send_tweet()" >
+    <br>
+    <input type="checkbox" id="suggest" name="suggest" value="on"> Suggestions?
+
+    <p>
+    <div id="messagelist" class="list_of_boxes">
+        <div id="feed_statusline" class="status">No posts to show... try picking a different topic?</div>
+        <div id="feed_errorline" class="error"></div>
+    </div>
+</form>
+
+
+</body>
+</html>
