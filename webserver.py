@@ -7,6 +7,7 @@
 
 # Edited: Will Schimitsch
 # Date: 19 September 2024
+# Updated: 4 October 2024 - add functionality for whisper web app
 
 # A simple web server from scratch in Python. Run it like this:
 #   python3 webserver.py  localhost  8888
@@ -83,15 +84,10 @@ class Topics_List:
         self.topics = {}
         self.version = 0
 
-    def add_topic(self, topic):
-        self.topics[topic] = [0, 0, 0] # initialize list with version, message count, and like count = 0
-
-    def add_msg(self, msg):
-        topics = self.get_msg_topics(msg)
-        for t in topics:
-            if t not in self.topics:
-                self.add_topic(t)
-            self.topics[t].append(msg)
+    def add_msg(self, topic, msg):
+        self.update_topic(topic)
+        self.topics[topic].append(msg) # add message to this topic's list
+        self.topics[topic][1] += 1 # increase num of messages for this topic
 
     def get_msg_topics(self, msg):
         return []
@@ -110,11 +106,17 @@ class Topics_List:
     
     def update_list_version(self):
         self.version += 1
+
+    def update_topic(self, topic):
+        if topic not in self.topics:
+            self.topics[topic] = [0, 0, 0] # initialize list with version, message count, and like count = 0
+        else:
+            self.topics[topic][0]+= 1
   
         
 topics = Topics_List()
-topics.add_topic("holycross")
-topics.add_topic("running")
+topics.update_topic("holycross")
+topics.update_topic("running")
     
 
 
@@ -452,11 +454,13 @@ def handle_one_http_request(conn):
     # Finally, look at the method and path to decide what to do.
     if req.method == "GET":
         resp = handle_http_get(req, conn)
-    elif req.method == "POST" or req.method == "PUT":
-        log("HTTP method '%s' is not yet supported by this server" % (req.method))
+    elif req.method == "POST":
+        resp = handle_http_post(req)
+    elif req.method == "PUT":
+        log("HTTP method PUT is not yet supported by this server")
         resp = Response("405 METHOD NOT ALLOWED",
                 "text/plain",
-                "PUT and POST methods not yet supported")
+                "PUT method not yet supported")
     else:
         log("HTTP method '%s' is not recognized by this server" % (req.method))
         resp = Response("405 METHOD NOT ALLOWED",
@@ -609,7 +613,7 @@ def handle_http_get_topics(req):
 
     if query_params.get('version') is None :
         log("Missing version in path: " + req.path)
-        return Response("404 NOT FOUND", "text/plain", "No such page: " + req.path)
+        return Response("404 NOT FOUND", "text/plain", "No such path: " + req.path)
 
     version = query_params.get('version')[0]
     while int(version) > 0:
@@ -778,6 +782,40 @@ def handle_http_get(req, conn):
         resp = handle_http_get_dir(req.path)
     else:
         resp = handle_http_get_file(req.path)
+    return resp
+
+
+# handle_http_post_msg() handles posting a message to the web app.
+def handle_http_post_msg(req):
+    # Check for valid request body
+    if not req.body.startswith("tags...") or req.body.find("\n") > req.body.find("message...") or not req.body.endswith("\n"):
+        log("Error with request body format")
+        return Response("400 BAD REQUEST", "text/plain", "Request body format not recognized: " + req.body)
+    # Split body into tags and message
+    tags, msg = req.body.split("\n", 1)
+    tags = tags.split(" ")
+    msg = msg.split(" ")
+    # check for empty message
+    if len(msg) == 1 or msg[1] == "": # detects messages that are either empty or whitespace
+        log("User tried posting empty message")
+        return Response("200 OK", "text/plain", "Empty messages are ignored")
+    # Add message (and topics) to topic list
+    message = " ".join(msg[1:0])
+    
+    with topics.lock:
+        for topic in tags[1:]:  
+            topics.add_msg(topic, message)
+    
+    return Response ("200 OK", "text/plain", "success")
+   
+    
+# handle_http_post() returns an appropriate response for a GET request
+def handle_http_post(req):
+    # Generate a response
+    if req.path == '/whisper/messages':
+        resp = handle_http_post_msg(req)
+    else:
+        resp = Response("404 NOT FOUND", "text/plain", "No such path: " + req.path)
     return resp
 
 # handle_http_connection() reads one or more HTTP requests from a client, parses
