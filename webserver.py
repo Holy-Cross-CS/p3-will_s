@@ -89,9 +89,6 @@ class Topics_List:
         self.topics[topic].append(msg) # add message to this topic's list
         self.topics[topic][1] += 1 # increase num of messages for this topic
 
-    def get_msg_topics(self, msg):
-        return []
-    
     def get_topic_like_count(self, topic):
         if topic not in self.topics:
             log(topic + ' is not currently a valid topic.')
@@ -103,15 +100,13 @@ class Topics_List:
             log(topic + ' is not currently a valid topic.')
             return
         return self.topics[topic][1]
-    
-    def update_list_version(self):
-        self.version += 1
 
     def update_topic(self, topic):
         if topic not in self.topics:
             self.topics[topic] = [0, 0, 0] # initialize list with version, message count, and like count = 0
         else:
             self.topics[topic][0]+= 1
+        self.version += 1 # update topic list version each time list is changed
   
         
 topics = Topics_List()
@@ -616,8 +611,9 @@ def handle_http_get_topics(req):
         return Response("404 NOT FOUND", "text/plain", "No such path: " + req.path)
 
     version = query_params.get('version')[0]
-    while int(version) > 0:
-        continue
+    with topics.lock:
+        while topics.version < int(version):
+            topics.lock.wait()  # wait for more changes to the list until giving a response to this request
     
     msg = f'%s\n' % version
     for topic in topics.topics:
@@ -804,7 +800,9 @@ def handle_http_post_msg(req):
     
     with topics.lock:
         for topic in tags[1:]:  
-            topics.add_msg(topic, message)
+            if topic != '':
+                topics.add_msg(topic, message)
+                topics.lock.notify_all()
     
     return Response ("200 OK", "text/plain", "success")
    
