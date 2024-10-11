@@ -53,6 +53,7 @@ server_port = None # e.g. 8888 or similar
 server_root = "./web_root"
 server_ip = None
 
+
 # Global variables to keep track of statistics, with initial values. These get
 # updated by different connection handler threads. To avoid concurrency
 # problems, these must only be accessed within a "with" block, like this:
@@ -90,6 +91,7 @@ class Topics_List:
         self.topics = {} # dictionary to store data for each topic
         self.version = 0 # keep track of the list version
         self.msg_id = 1 # initial message ID that will increment as messages are added
+        #TODO: let messages persist
 
     # add_msg() appends the given msg to the list of the given topic and updates the topic
     # version and list version. Each message has a unique ID, even if it is associated with
@@ -98,9 +100,13 @@ class Topics_List:
         for t in tags: # add each topic (that is not blank) to the list
             if t != '':
                 self.update_topic(t)
+                if len(self.topics[t]) >= 10: # if this topic has 7 or more messages (plus the three metadata items), remove one
+                    self.topics[t].pop(3) # remove the least recently addd item
+                    self.topics[t][1] -= 1 # decrement message count
                 self.topics[t].append([self.msg_id, msg]) # add message to this topic's list
                 self.topics[t][1] += 1 # increase num of messages for this topic
         self.msg_id += 1 # increment message ID so following messages have different IDs
+      
 
     # delete_msg() looks through each topics's messages and removes messages with a 
     # matching id to the given input. Messages can have multiple topics, so search
@@ -120,6 +126,7 @@ class Topics_List:
                     continue
         return num_deleted > 0 # if no messages deleted, message ID does not exist
 
+
     # get_topic_like_count() returns the like count of the given topic, if 
     # it exists.
     def get_topic_like_count(self, topic):
@@ -128,12 +135,14 @@ class Topics_List:
             return
         return self.topics[topic][2]
     
+
     # get_topic_msgs() a list of messages under the given topic, if it exists.
     def get_topic_msgs(self, topic):
         if topic not in self.topics:
             log(topic + ' is not currently a valid topic.')
             return
         return self.topics[topic][3:]
+
 
     # get_topic_msg_count() returns the message count of the given topic, if 
     # it exists.
@@ -143,6 +152,7 @@ class Topics_List:
             return
         return self.topics[topic][1]
 
+
     # get_topic_version() returns the version number of the given topic, if 
     # it exists.
     def get_topic_version(self, topic):
@@ -150,14 +160,16 @@ class Topics_List:
             log(topic + ' is not currently a valid topic.')
             return
         return self.topics[topic][0]
-    
+
+
     # is_topic() checks if the given topic name is in the list.
     def is_topic(self, topic):
         if topic in self.topics:
             return True
         else:
             return False
-    
+
+
     # like_topic() increments the like count of the given topic, so long
     # as it exists. By nature, it also increments the topic version and
     # list version if successful. 
@@ -169,6 +181,7 @@ class Topics_List:
         self.topics[topic][0]+= 1 # update topic version
         self.version += 1 # update list version
 
+
     # update_topic() is called by add_msg() to either increment the topic version
     # or initialize a new topic, and then increment the list version.
     def update_topic(self, topic):
@@ -178,10 +191,13 @@ class Topics_List:
             self.topics[topic][0]+= 1 # update topic version
         self.version += 1 # update topic list version each time list is changed
 
+
 # initialize the topic list
 topics = Topics_List()
-topics.add_msg(["holycross"], "Hi #holycross!")
-topics.add_msg(["running"], "Do you like #running?")
+with topics.lock:
+    topics.add_msg(["holycross"], "Hi #holycross!")
+    topics.add_msg(["running"], "Do you like #running?")
+    topics.lock.notify_all()
     
 
 # Request objects are used to hold information associated with a single HTTP
@@ -671,6 +687,7 @@ def handle_http_get_hello(req):
 # (i.e., GET whisper/topics?version=0) for the whisper client. 
 def handle_http_get_topics(req):
     log("Handling http get whisper topics request")
+        
     # Check URL parameters for the version number
     path_query = urllib.parse.urlparse(req.path).query
     query_params = urllib.parse.parse_qs(path_query)
@@ -682,9 +699,10 @@ def handle_http_get_topics(req):
     with topics.lock:
         while topics.version < int(version):
             topics.lock.wait()  # wait for more changes to the list until giving a response to this request
-    
+            
     msg = f'%s\n' % version
     # Order the topics based on topic version (i.e., which topics have been updated the most)
+    # TODO put topic that the client most recently interacted with at the TOP using cookies
     ordered_topics = dict(sorted(topics.topics.items(), key = lambda item: item[1][0], reverse = True))
     print("TOPICS SORTED: ", ordered_topics)
     for topic in ordered_topics:
@@ -710,7 +728,6 @@ def handle_http_get_feed(req):
 
     version = query_params.get('version')[0]
     with topics.lock:
-        # print("TOPIC VERSION: ", topics.get_topic_version(topic))
         while topics.get_topic_version(topic) < int(version):
             topics.lock.wait()  # wait for more changes to the list until giving a response to this request
     
@@ -897,7 +914,6 @@ def handle_http_post_msg(req):
         return Response("200 OK", "text/plain", "Empty messages are ignored")
     # Add message (and topics) to topic list
     message = " ".join(msg[1:])
-    
     with topics.lock:
         topics.add_msg(tags[1:], message) # pass all topics to add_msg
         topics.lock.notify_all()
