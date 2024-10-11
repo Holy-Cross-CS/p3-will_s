@@ -78,42 +78,89 @@ stats = Statistics()
 # Global variables to keep track of the topics and messages for the whisper app.
 # These get updated by different connection handler threads. To avoid concurrency
 # problems, these must only be accessed within a "with" block. 
+#
+# Topics_List class holds a 'topics' dictionary, which corresponds a given topic to a 
+# list. The first # three items in this list are numbers, which denote the topic version,
+# message count, and like count, respectively. Every other item in the list (if present)
+# are independent messages under that topic. Also holds a 'version' variable to store
+# the overall topics list version. 
 class Topics_List:
     def __init__(self):
         self.lock = threading.Condition() # protects topics dictionary
-        self.topics = {}
-        self.version = 0
+        self.topics = {} # dictionary to store data for each topic
+        self.version = 0 # keep track of the list version
 
+    # add_msg() appends the given msg to the list of the given topic and 
+    # updates the topic version and list version. If the topic does not
+    # already exist, it will also add the topic to the list.
     def add_msg(self, topic, msg):
         self.update_topic(topic)
         self.topics[topic].append(msg) # add message to this topic's list
         self.topics[topic][1] += 1 # increase num of messages for this topic
 
+    # get_topic_like_count() returns the like count of the given topic, if 
+    # it exists.
     def get_topic_like_count(self, topic):
         if topic not in self.topics:
             log(topic + ' is not currently a valid topic.')
             return
         return self.topics[topic][2]
+    
+    # get_topic_msgs() a list of messages under the given topic, if it exists.
+    def get_topic_msgs(self, topic):
+        if topic not in self.topics:
+            log(topic + ' is not currently a valid topic.')
+            return
+        return self.topics[topic][3:]
 
+    # get_topic_msg_count() returns the message count of the given topic, if 
+    # it exists.
     def get_topic_msg_count(self, topic):
         if topic not in self.topics:
             log(topic + ' is not currently a valid topic.')
             return
         return self.topics[topic][1]
 
+    # get_topic_version() returns the version number of the given topic, if 
+    # it exists.
+    def get_topic_version(self, topic):
+        if topic not in self.topics:
+            log(topic + ' is not currently a valid topic.')
+            return
+        return self.topics[topic][0]
+    
+    # is_topic() checks if the given topic name is in the list.
+    def is_topic(self, topic):
+        if topic in self.topics:
+            return True
+        else:
+            return False
+    
+    # like_topic() increments the like count of the given topic, so long
+    # as it exists. By nature, it also increments the topic version and
+    # list version if successful. 
+    def like_topic(self, topic):
+        if topic not in self.topics:
+            log(topic + ' is not currently a valid topic.')
+            return
+        self.topics[topic][2] += 1 # increment like count
+        self.topics[topic][0]+= 1 # update topic version
+        self.version += 1 # update list version
+
+    # update_topic() is called by add_msg() to either increment the topic version
+    # or initialize a new topic, and then increment the list version.
     def update_topic(self, topic):
         if topic not in self.topics:
             self.topics[topic] = [0, 0, 0] # initialize list with version, message count, and like count = 0
         else:
-            self.topics[topic][0]+= 1
+            self.topics[topic][0]+= 1 # update topic version
         self.version += 1 # update topic list version each time list is changed
-  
-        
-topics = Topics_List()
-topics.update_topic("holycross")
-topics.update_topic("running")
-    
 
+# initialize the topic list
+topics = Topics_List()
+topics.add_msg("holycross", "Hi #holycross!")
+topics.add_msg("running", "Do you like #running?")
+    
 
 # Request objects are used to hold information associated with a single HTTP
 # request from a client.
@@ -602,10 +649,9 @@ def handle_http_get_hello(req):
 # (i.e., GET whisper/topics?version=0) for the whisper client. 
 def handle_http_get_topics(req):
     log("Handling http get whisper topics request")
-    # Check URL parameters or cookies for the user preferences
+    # Check URL parameters for the version number
     path_query = urllib.parse.urlparse(req.path).query
     query_params = urllib.parse.parse_qs(path_query)
-
     if query_params.get('version') is None :
         log("Missing version in path: " + req.path)
         return Response("404 NOT FOUND", "text/plain", "No such path: " + req.path)
@@ -621,6 +667,33 @@ def handle_http_get_topics(req):
 
     return Response("200 OK", "text/plain", msg)
 
+def handle_http_get_feed(req):
+    log("Handling http get whisper topics request")
+
+    path = req.path.split("?")[0].split("/") # split the path to get the topic
+    if len(path) < 4 or path[3] == '':
+        log("Missing topic in path: " + req.path)
+        return Response("404 NOT FOUND", "text/plain", "No such path: " + req.path)
+    
+    topic = path[3]
+    # Check URL parameters for topic version number
+    path_query = urllib.parse.urlparse(req.path).query
+    query_params = urllib.parse.parse_qs(path_query)
+    if query_params.get('version') is None :
+        log("Missing version in path: " + req.path)
+        return Response("404 NOT FOUND", "text/plain", "No such path: " + req.path)
+
+    version = query_params.get('version')[0]
+    with topics.lock:
+        # print("TOPIC VERSION: ", topics.get_topic_version(topic))
+        while topics.get_topic_version(topic) < int(version):
+            topics.lock.wait()  # wait for more changes to the list until giving a response to this request
+    
+    msg = f'%s\n' % version
+    for m in topics.get_topic_msgs(topic):
+        msg += f'- %s\n' % m
+
+    return Response("200 OK", "text/plain", msg)
 
 # handle_http_get_quote() returns a response for the GET /quote
 def handle_http_get_quote(req):
@@ -774,6 +847,8 @@ def handle_http_get(req, conn):
         resp = handle_http_get_hello(req)
     elif req.path.split("?")[0] == "/whisper/topics":
         resp = handle_http_get_topics(req)
+    elif req.path.split("?")[0].startswith("/whisper/feed"):
+        resp = handle_http_get_feed(req)
     elif os.path.isdir(server_root + req.path):
         resp = handle_http_get_dir(req.path)
     else:
@@ -796,22 +871,39 @@ def handle_http_post_msg(req):
         log("User tried posting empty message")
         return Response("200 OK", "text/plain", "Empty messages are ignored")
     # Add message (and topics) to topic list
-    message = " ".join(msg[1:0])
+    message = " ".join(msg[1:])
     
     with topics.lock:
         for topic in tags[1:]:  
             if topic != '':
                 topics.add_msg(topic, message)
+                log("Added following message to topic " + topic + ": " + message)
                 topics.lock.notify_all()
     
     return Response ("200 OK", "text/plain", "success")
    
+def handle_http_post_like(req):
+    path = req.path.split("/")
+    if len(path) < 4 or path[3] == '':
+        log("Missing topic in path: " + req.path)
+        return Response("404 NOT FOUND", "text/plain", "No such path: " + req.path)
     
+    topic = path[3]
+    with topics.lock:
+        topics.like_topic(topic)
+        log("Liked topic " + topic + ".")
+        topics.lock.notify_all()
+
+    return Response ("200 OK", "text/plain", "success") 
+
+
 # handle_http_post() returns an appropriate response for a GET request
 def handle_http_post(req):
     # Generate a response
     if req.path == '/whisper/messages':
         resp = handle_http_post_msg(req)
+    elif req.path.startswith('/whisper/like'):
+        resp = handle_http_post_like(req)
     else:
         resp = Response("404 NOT FOUND", "text/plain", "No such path: " + req.path)
     return resp
