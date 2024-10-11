@@ -80,7 +80,7 @@ stats = Statistics()
 # problems, these must only be accessed within a "with" block. 
 #
 # Topics_List class holds a 'topics' dictionary, which corresponds a given topic to a 
-# list. The first # three items in this list are numbers, which denote the topic version,
+# list. The first three items in this list are numbers, which denote the topic version,
 # message count, and like count, respectively. Every other item in the list (if present)
 # are independent messages under that topic. Also holds a 'version' variable to store
 # the overall topics list version. 
@@ -89,14 +89,36 @@ class Topics_List:
         self.lock = threading.Condition() # protects topics dictionary
         self.topics = {} # dictionary to store data for each topic
         self.version = 0 # keep track of the list version
+        self.msg_id = 1 # initial message ID that will increment as messages are added
 
-    # add_msg() appends the given msg to the list of the given topic and 
-    # updates the topic version and list version. If the topic does not
-    # already exist, it will also add the topic to the list.
-    def add_msg(self, topic, msg):
-        self.update_topic(topic)
-        self.topics[topic].append(msg) # add message to this topic's list
-        self.topics[topic][1] += 1 # increase num of messages for this topic
+    # add_msg() appends the given msg to the list of the given topic and updates the topic
+    # version and list version. Each message has a unique ID, even if it is associated with
+    # multiple topics. If the topic does not already exist, it will also add the topic to the list.
+    def add_msg(self, tags, msg):
+        for t in tags: # add each topic (that is not blank) to the list
+            if t != '':
+                self.update_topic(t)
+                self.topics[t].append([self.msg_id, msg]) # add message to this topic's list
+                self.topics[t][1] += 1 # increase num of messages for this topic
+        self.msg_id += 1 # increment message ID so following messages have different IDs
+
+    # delete_msg() looks through each topics's messages and removes messages with a 
+    # matching id to the given input. Messages can have multiple topics, so search
+    # through each topic to delete every iteration of the message. Returns True if 
+    # messages were delete, False if not (i.e., no message with the given id exists).
+    def delete_msg(self, id):
+        num_deleted = 0
+        for topic in self.topics:
+            msgs = self.topics[topic][3:] # get all messages in this topic
+            for m in msgs:
+                if m[0] == id:
+                    m[1] = '(This message has been removed.)' # Change the message to a fixed string
+                    num_deleted += 1 # message successfully deleted, look for the same message in other topics
+                    self.topics[topic][0] += 1 # increment topic version
+                    self.topics[topic][1] -= 1 # decrement message count
+                    self.version += 1 # increment list version
+                    continue
+        return num_deleted > 0 # if no messages deleted, message ID does not exist
 
     # get_topic_like_count() returns the like count of the given topic, if 
     # it exists.
@@ -158,8 +180,8 @@ class Topics_List:
 
 # initialize the topic list
 topics = Topics_List()
-topics.add_msg("holycross", "Hi #holycross!")
-topics.add_msg("running", "Do you like #running?")
+topics.add_msg(["holycross"], "Hi #holycross!")
+topics.add_msg(["running"], "Do you like #running?")
     
 
 # Request objects are used to hold information associated with a single HTTP
@@ -662,7 +684,10 @@ def handle_http_get_topics(req):
             topics.lock.wait()  # wait for more changes to the list until giving a response to this request
     
     msg = f'%s\n' % version
-    for topic in topics.topics:
+    # Order the topics based on topic version (i.e., which topics have been updated the most)
+    ordered_topics = dict(sorted(topics.topics.items(), key = lambda item: item[1][0], reverse = True))
+    print("TOPICS SORTED: ", ordered_topics)
+    for topic in ordered_topics:
         msg += f'%d %d %s\n' % (topics.get_topic_msg_count(topic), topics.get_topic_like_count(topic), topic)
 
     return Response("200 OK", "text/plain", msg)
@@ -691,7 +716,7 @@ def handle_http_get_feed(req):
     
     msg = f'%s\n' % version
     for m in topics.get_topic_msgs(topic):
-        msg += f'- %s\n' % m
+        msg += f'%d %s\n' % (m[0], m[1])
 
     return Response("200 OK", "text/plain", msg)
 
@@ -874,14 +899,13 @@ def handle_http_post_msg(req):
     message = " ".join(msg[1:])
     
     with topics.lock:
-        for topic in tags[1:]:  
-            if topic != '':
-                topics.add_msg(topic, message)
-                log("Added following message to topic " + topic + ": " + message)
-                topics.lock.notify_all()
+        topics.add_msg(tags[1:], message) # pass all topics to add_msg
+        topics.lock.notify_all()
     
     return Response ("200 OK", "text/plain", "success")
    
+
+# handle_http_post_msg() handles liking a topic on the web app.
 def handle_http_post_like(req):
     path = req.path.split("/")
     if len(path) < 4 or path[3] == '':
@@ -896,14 +920,36 @@ def handle_http_post_like(req):
 
     return Response ("200 OK", "text/plain", "success") 
 
+# handle_http_post_msg() handles downvoting (or removing) a message on the web app.
+def handle_http_post_downvote(req):
+    path = req.path.split("/")
+    if len(path) < 4 or path[3] == '':
+        log("Missing Message ID in path: " + req.path)
+        return Response("404 NOT FOUND", "text/plain", "No such path: " + req.path)
 
-# handle_http_post() returns an appropriate response for a GET request
+    msg_id = int(path[3])
+
+    with topics.lock:
+        if topics.delete_msg(msg_id):
+            log("Deleting message with ID " + str(msg_id) + " from the list.")
+            resp = Response ("200 OK", "text/plain", "success") 
+        else: 
+            log("Could not delete message with ID " + str(msg_id) + ": no such message.")
+            resp = Response ("404 NOT FOUND", "text/plain", "No such path: " + req.path) 
+        topics.lock.notify_all()
+
+    return resp
+
+
+# handle_http_post() returns an appropriate response for a POST request
 def handle_http_post(req):
     # Generate a response
     if req.path == '/whisper/messages':
         resp = handle_http_post_msg(req)
     elif req.path.startswith('/whisper/like'):
         resp = handle_http_post_like(req)
+    elif req.path.startswith('/whisper/downvote'):
+        resp = handle_http_post_downvote(req)
     else:
         resp = Response("404 NOT FOUND", "text/plain", "No such path: " + req.path)
     return resp
