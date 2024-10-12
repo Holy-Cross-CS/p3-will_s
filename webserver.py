@@ -83,15 +83,32 @@ stats = Statistics()
 # Topics_List class holds a 'topics' dictionary, which corresponds a given topic to a 
 # list. The first three items in this list are numbers, which denote the topic version,
 # message count, and like count, respectively. Every other item in the list (if present)
-# are independent messages under that topic. Also holds a 'version' variable to store
-# the overall topics list version. 
+# are independent messages under that topic. Each message is a list, the first item being
+# the message ID number, and the second item being the message. Topics_List also holds a 
+# 'version' variable to store the overall list version. 
 class Topics_List:
     def __init__(self):
         self.lock = threading.Condition() # protects topics dictionary
-        self.topics = {} # dictionary to store data for each topic
         self.version = 0 # keep track of the list version
         self.msg_id = 1 # initial message ID that will increment as messages are added
-        #TODO: let messages persist
+        self.topics = {} # dictionary to store data for each topic
+
+        # Allow topics and messages to persist different sessions
+        with open("topics.txt", "r") as file:
+            topic = file.readline() # get first topic
+            while topic: # while not EOF 
+                metadata = [int(x.strip()) for x in file.readline().split(" ")] # get the version #, message count, and like count as ints
+                self.topics[topic.strip()] = metadata
+                line = file.readline()
+                while not line.startswith('.') and line: # read messages while not == '.' (end of topic) and not EOF
+                    if line == '\n': # skip blank lines
+                        line = file.readline()
+                        continue
+                    msg = line.strip().split(" ", 1) # split message ID and message string
+                    msg[0] = int(msg[0])
+                    self.topics[topic.strip()].append(msg)
+                    line = file.readline() # get next message
+                topic = file.readline() # get next topic
 
     # add_msg() appends the given msg to the list of the given topic and updates the topic
     # version and list version. Each message has a unique ID, even if it is associated with
@@ -99,12 +116,18 @@ class Topics_List:
     def add_msg(self, tags, msg):
         for t in tags: # add each topic (that is not blank) to the list
             if t != '':
-                self.update_topic(t)
+                if t not in self.topics: # topic doesn't exist yet
+                    self.topics[t] = [0, 0, 0] # initialize list with version, message count, and like count = 0
+                else:
+                    self.topics[t][0]+= 1 # update topic version
+            
                 if len(self.topics[t]) >= 10: # if this topic has 7 or more messages (plus the three metadata items), remove one
                     self.topics[t].pop(3) # remove the least recently addd item
                     self.topics[t][1] -= 1 # decrement message count
                 self.topics[t].append([self.msg_id, msg]) # add message to this topic's list
+
                 self.topics[t][1] += 1 # increase num of messages for this topic
+                self.version += 1 # update topic list version each time list is changed
         self.msg_id += 1 # increment message ID so following messages have different IDs
       
 
@@ -181,18 +204,7 @@ class Topics_List:
         self.topics[topic][0]+= 1 # update topic version
         self.version += 1 # update list version
 
-
-    # update_topic() is called by add_msg() to either increment the topic version
-    # or initialize a new topic, and then increment the list version.
-    def update_topic(self, topic):
-        if topic not in self.topics:
-            self.topics[topic] = [0, 0, 0] # initialize list with version, message count, and like count = 0
-        else:
-            self.topics[topic][0]+= 1 # update topic version
-        self.version += 1 # update topic list version each time list is changed
-
-
-# initialize the topic list
+# initialize the topic list (if no contents in topics.txt)
 topics = Topics_List()
 with topics.lock:
     topics.add_msg(["holycross"], "Hi #holycross!")
@@ -695,21 +707,23 @@ def handle_http_get_topics(req):
         log("Missing version in path: " + req.path)
         return Response("404 NOT FOUND", "text/plain", "No such path: " + req.path)
 
+    # get the topic list version from the request URL
     version = query_params.get('version')[0]
     with topics.lock:
         while topics.version < int(version):
-            topics.lock.wait()  # wait for more changes to the list until giving a response to this request
+            topics.lock.wait()  # wait for more changes to the list until this version = request version
             
     msg = f'%s\n' % version
     # Order the topics based on topic version (i.e., which topics have been updated the most)
-    # TODO put topic that the client most recently interacted with at the TOP using cookies
     ordered_topics = dict(sorted(topics.topics.items(), key = lambda item: item[1][0], reverse = True))
-    print("TOPICS SORTED: ", ordered_topics)
+    
+    # Create response message
     for topic in ordered_topics:
         msg += f'%d %d %s\n' % (topics.get_topic_msg_count(topic), topics.get_topic_like_count(topic), topic)
 
     return Response("200 OK", "text/plain", msg)
 
+# handle_http_get_feed() returns a response for the GET feed for respective topics. 
 def handle_http_get_feed(req):
     log("Handling http get whisper topics request")
 
@@ -718,7 +732,7 @@ def handle_http_get_feed(req):
         log("Missing topic in path: " + req.path)
         return Response("404 NOT FOUND", "text/plain", "No such path: " + req.path)
     
-    topic = path[3]
+    topic = path[3] # topic will always be 4th part of path
     # Check URL parameters for topic version number
     path_query = urllib.parse.urlparse(req.path).query
     query_params = urllib.parse.parse_qs(path_query)
@@ -726,11 +740,13 @@ def handle_http_get_feed(req):
         log("Missing version in path: " + req.path)
         return Response("404 NOT FOUND", "text/plain", "No such path: " + req.path)
 
+    # Get topic version from query
     version = query_params.get('version')[0]
     with topics.lock:
         while topics.get_topic_version(topic) < int(version):
-            topics.lock.wait()  # wait for more changes to the list until giving a response to this request
+            topics.lock.wait()  # wait for more changes to the list until this version = request version
     
+    # Create response message
     msg = f'%s\n' % version
     for m in topics.get_topic_msgs(topic):
         msg += f'%d %s\n' % (m[0], m[1])
@@ -929,6 +945,7 @@ def handle_http_post_like(req):
         return Response("404 NOT FOUND", "text/plain", "No such path: " + req.path)
     
     topic = path[3]
+    # Like the given topic
     with topics.lock:
         topics.like_topic(topic)
         log("Liked topic " + topic + ".")
@@ -944,7 +961,7 @@ def handle_http_post_downvote(req):
         return Response("404 NOT FOUND", "text/plain", "No such path: " + req.path)
 
     msg_id = int(path[3])
-
+    # 'Delete' the message, if it exists
     with topics.lock:
         if topics.delete_msg(msg_id):
             log("Deleting message with ID " + str(msg_id) + " from the list.")
@@ -1102,4 +1119,18 @@ try:
 finally:
     log("Shutting down...")
     s.close()
+    log("Saving topics...")
+    # Save topics in a txt file so that sessions can persist.
+    # The file has the following order for each topic:
+    # topic name
+    # topic version, message count, like count
+    # followed by each message
+    # '.' denoting end of this topic's data
+    with open("topics.txt", "w") as file:
+        for t in topics.topics:
+            file.write(t+'\n')
+            file.write(f'%d %d %d\n' % (topics.topics[t][0], topics.topics[t][1], topics.topics[t][2]))
+            for msg in topics.topics[t][3:]:
+                file.write(f'%d %s\n' % (msg[0], msg[1]))
+            file.write('.\n')
     log("Done")
